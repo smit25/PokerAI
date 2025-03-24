@@ -25,7 +25,14 @@ class Redraw:
         Returns:
             Tuple of (should_redraw, card_idx_to_discard)
         """
-        if street > 1:
+        # Safety checks
+        if hole_cards is None or len(hole_cards) != 2:
+            return False, -1
+            
+        if board is None:
+            board = []
+            
+        if street > 1 or street < 0:
             return False, -1
         
         cache_key = (tuple(hole_cards), tuple(board), street, position)
@@ -37,102 +44,358 @@ class Redraw:
         current_strength = self.hand_evaluator.get_hand_strength(hole_cards, board, opponent_range)
         
         # For very strong hands, don't redraw
-        if current_strength > 0.8:
+        if current_strength > 0.85:  # Increased threshold slightly
             self.redraw_cache[cache_key] = (False, -1)
             return False, -1
         
-        # Calculate expected value of redrawing vs not redrawing
+        # Calculate expected value of keeping current hand
         keep_ev = self._calculate_keep_ev(hole_cards, board, street, position, opponent_tendencies)
         
-        # Calculate EV of redrawing each card using importance sampling
-        redraw_options = []
+        # Get hand type to make more informed decisions
+        hand_type = self._get_hand_type(hole_cards, board)
         
-        for card_idx in range(2):
-            # Get the card we're keeping
-            other_card = hole_cards[1-card_idx]
+        # SMART CARD SELECTION: Directly evaluate which card to discard based on rank and potential
+        card_values = []
+        for i, card in enumerate(hole_cards):
+            # Calculate the card's intrinsic value
+            rank = card // 3
+            suit = card % 3
             
-            # Cards that are already in play and unavailable
-            unavailable_cards = set(hole_cards) | set(board)
+            # Calculate intrinsic value - higher is better to keep
+            # Aces (rank 8) are worth much more than low cards
+            intrinsic_value = (rank / 8.0) ** 1.5  # Exponential scaling to prioritize high cards
             
-            # Determine available cards for replacement
-            available_cards = set(range(27)) - unavailable_cards
-            
-            # Use importance sampling - focus on likely valuable replacements
-            # Group cards into buckets by rank for more efficient sampling
-            rank_buckets = {}
-            for card in available_cards:
-                rank = card // 3
-                if rank not in rank_buckets:
-                    rank_buckets[rank] = []
-                rank_buckets[rank].append(card)
-            
-            # Adaptive sample size based on available time
-            sample_size = 15 if street == 0 else 10
-            
-            # Sample cards, giving preference to high ranks
-            sampled_cards = []
-            # Sample high cards (A, 9, 8) more frequently
-            high_ranks = [8, 7, 6]  # A, 9, 8
-            for rank in high_ranks:
-                if rank in rank_buckets:
-                    sampled_cards.extend(rank_buckets[rank])
-            
-            # If we need more samples, add middle ranks
-            if len(sampled_cards) < sample_size:
-                mid_ranks = [5, 4, 3]  # 7, 6, 5
-                for rank in mid_ranks:
-                    if rank in rank_buckets and len(sampled_cards) < sample_size:
-                        sampled_cards.extend(rank_buckets[rank])
-            
-            # If still need more, add remaining ranks
-            remaining_ranks = [2, 1, 0]  # 4, 3, 2
-            for rank in remaining_ranks:
-                if rank in rank_buckets and len(sampled_cards) < sample_size:
-                    sampled_cards.extend(rank_buckets[rank])
-            
-            # Limit to desired sample size
-            if len(sampled_cards) > sample_size:
-                sampled_cards = random.sample(sampled_cards, sample_size)
-            
-            # Calculate EV for each replacement
-            total_ev = 0
-            weight_sum = 0
-            
-            for new_card in sampled_cards:
-                # Higher weight for higher ranked cards
-                rank = new_card // 3
-                weight = 1.0 + (rank / 8.0)  # Weight from 1.0 to 2.0
+            # Value adjustment based on current board
+            if board and street > 0:
+                # Count cards of same rank and suit on board
+                same_rank_count = sum(1 for b in board if b // 3 == rank)
+                same_suit_count = sum(1 for b in board if b % 3 == suit)
                 
-                # Create new hand
-                new_hand = [other_card, new_card]
+                # Pairs are valuable
+                if same_rank_count > 0:
+                    intrinsic_value += 0.3 * same_rank_count
                 
-                # Calculate new hand EV
-                new_ev = self._calculate_hand_ev(new_hand, board, street, position, opponent_tendencies)
+                # Potential flushes are valuable
+                if same_suit_count >= 2:
+                    intrinsic_value += 0.25
                 
-                # Weighted sum
-                total_ev += new_ev * weight
-                weight_sum += weight
+                # Potential straights
+                board_ranks = sorted([b // 3 for b in board])
+                straight_potential = 0
+                
+                # Check if this card could be part of a straight
+                for start in range(max(0, rank-4), min(5, rank)):
+                    # Count how many unique ranks in range [start, start+4] are in board_ranks or rank
+                    ranks_in_range = set(r for r in board_ranks if start <= r <= start+4)
+                    if rank >= start and rank <= start+4:
+                        ranks_in_range.add(rank)
+                    
+                    # If we have 3+ ranks, there's straight potential
+                    if len(ranks_in_range) >= 3:
+                        straight_potential = 0.2
+                        break
+                
+                intrinsic_value += straight_potential
             
-            # Calculate weighted average EV
-            if weight_sum > 0:
-                avg_ev = total_ev / weight_sum
-                redraw_options.append((avg_ev, card_idx))
-            else:
-                redraw_options.append((0, card_idx))
+            # Store the calculated value
+            card_values.append((intrinsic_value, i))
         
-        # Find best redraw option
-        redraw_options.sort(reverse=True)
-        best_redraw_ev, best_card_idx = redraw_options[0]
+        # Sort by value (ascending, so lowest value is first - to be discarded)
+        card_values.sort()
         
-        # Compare to keeping current hand
-        if best_redraw_ev > keep_ev + 0.05:  # Threshold for redrawing
-            decision = (True, best_card_idx)
+        # The card with the lowest value is the best candidate for discarding
+        best_discard_idx = card_values[0][1]
+        other_card_idx = 1 - best_discard_idx
+        
+        # Now calculate expected improvement from redrawing
+        unavailable_cards = set(hole_cards) | set(board)
+        
+        # Determine available cards for replacement
+        available_cards = set(range(27)) - unavailable_cards
+        
+        # More strategic sampling of replacement cards
+        sampled_cards = self._smart_card_sampling(available_cards, hole_cards[other_card_idx], board, hand_type, street)
+        
+        # Calculate EV for redrawing with these sampled cards
+        total_ev = 0
+        weight_sum = 0
+        
+        for new_card in sampled_cards:
+            # Higher weight for cards that synergize with current hand
+            weight = self._calculate_synergy_weight(new_card, hole_cards[other_card_idx], board, hand_type)
+            
+            # Create new hand
+            new_hand = [hole_cards[other_card_idx], new_card]
+            
+            # Calculate new hand EV
+            new_ev = self._calculate_hand_ev(new_hand, board, street, position, opponent_tendencies)
+            
+            # Weighted sum
+            total_ev += new_ev * weight
+            weight_sum += weight
+        
+        # Calculate weighted average EV
+        if weight_sum > 0:
+            redraw_ev = total_ev / weight_sum
+        else:
+            redraw_ev = 0
+        
+        # Decision logic: Compare redraw EV to keep EV with a threshold
+        improvement_threshold = 0.05  # Base threshold
+        
+        # Adjust threshold based on hand strength and street
+        if current_strength > 0.7:
+            # For strong hands, require more improvement
+            improvement_threshold = 0.1
+        elif current_strength < 0.3:
+            # For weak hands, be more willing to redraw
+            improvement_threshold = 0.02
+        
+        # On the flop, be more conservative with redraws
+        if street == 1:
+            improvement_threshold += 0.02
+        
+        # Final decision
+        if redraw_ev > keep_ev + improvement_threshold:
+            decision = (True, best_discard_idx)
         else:
             decision = (False, -1)
         
         # Cache result
         self.redraw_cache[cache_key] = decision
         return decision
+    
+    def _get_hand_type(self, hole_cards, board):
+        """
+        Determine the current hand type/pattern for making informed redraw decisions.
+        
+        Args:
+            hole_cards: List of hole card indices
+            board: List of board card indices
+            
+        Returns:
+            String representing hand type
+        """
+        # Safety checks
+        if hole_cards is None or len(hole_cards) < 2:
+            return "unknown"
+            
+        if board is None:
+            board = []
+            
+        if not board:
+            # Preflop only - classify based on hole cards
+            ranks = [card // 3 for card in hole_cards]
+            suits = [card % 3 for card in hole_cards]
+
+            ranks.sorted()
+            
+            if ranks[0] == ranks[1]:
+                return "pair"
+            elif suits[0] == suits[1]:
+                return "suited"
+            elif abs(ranks[0] - ranks[1]) <=4 or abs(8 - ranks[1] - ranks[0]) <=4:
+                return "connected"
+            elif max(ranks) >= 7:  # 9 or Ace
+                return "high_card"
+            else:
+                return "low_cards"
+        else:
+            # Post-flop
+            all_cards = hole_cards + board
+            ranks = [card // 3 for card in all_cards]
+            suits = [card % 3 for card in all_cards]
+            
+            # Count ranks and suits
+            rank_counts = {}
+            for r in ranks:
+                rank_counts[r] = rank_counts.get(r, 0) + 1
+            
+            suit_counts = {}
+            for s in suits:
+                suit_counts[s] = suit_counts.get(s, 0) + 1
+            
+            # Check hand types
+            if max(rank_counts.values() if rank_counts else [0]) >= 3:
+                return "trips_plus"
+            elif len([r for r, count in rank_counts.items() if count >= 2]) >= 2:
+                return "two_pair_plus"
+            elif max(rank_counts.values() if rank_counts else [0]) >= 2:
+                return "pair_plus"
+            elif max(suit_counts.values() if suit_counts else [0]) >= 4:
+                return "flush_draw"
+            
+            # Check for straight draws
+            sorted_ranks = sorted(set(ranks))
+            for i in range(len(sorted_ranks) - 3):
+                if sorted_ranks[i+3] - sorted_ranks[i] <= 4:
+                    return "straight_draw"
+            
+            return "high_card" if any(r >= 6 for r in ranks) else "low_cards"
+    
+    def _smart_card_sampling(self, available_cards, kept_card, board, hand_type, street):
+        """
+        Intelligently sample potential replacement cards based on current hand type.
+        
+        Args:
+            available_cards: Set of available card indices
+            kept_card: The card we're keeping
+            board: List of board card indices
+            hand_type: String representing current hand type
+            street: Current street
+            
+        Returns:
+            List of sampled card indices
+        """
+        # Safety checks
+        if not available_cards:
+            return []
+            
+        if board is None:
+            board = []
+            
+        kept_rank = kept_card // 3
+        kept_suit = kept_card % 3
+        
+        # Convert available_cards set to list for easier manipulation
+        available_list = list(available_cards)
+        
+        # Calculate card priorities based on hand type
+        card_priorities = []
+        
+        for card in available_list:
+            rank = card // 3
+            suit = card % 3
+            priority = 0
+            
+            # Base priority based on rank (higher is better)
+            priority += rank / 8.0
+            
+            # Hand-type specific adjustments
+            if hand_type == "pair" or hand_type == "trips_plus":
+                # Prioritize same rank as kept card
+                if rank == kept_rank:
+                    priority += 3.0
+                    
+            elif hand_type == "suited" or hand_type == "flush_draw":
+                # Prioritize same suit as kept card
+                if suit == kept_suit:
+                    priority += 2.0
+            
+            elif hand_type == "connected" or hand_type == "straight_draw":
+                # Prioritize cards that could complete a straight
+                if abs(rank - kept_rank) <= 4:
+                    priority += 1.0 + (1.0 / (abs(rank - kept_rank) + 1))
+            
+            elif hand_type == "high_card":
+                # Prioritize high cards and cards that match kept card suit
+                if rank >= 6:  # 8 or higher
+                    priority += 1.0
+                if suit == kept_suit:
+                    priority += 0.5
+            
+            # Board-specific adjustments
+            if board:
+                board_ranks = [b // 3 for b in board]
+                board_suits = [b % 3 for b in board]
+                
+                # Potential pairs with board
+                if rank in board_ranks:
+                    priority += 1.5
+                
+                # Potential flush with board
+                if suit in board_suits and sum(1 for s in board_suits if s == suit) >= 2:
+                    priority += 1.0
+                
+                # Potential straight with board
+                board_ranks_set = set(board_ranks)
+                board_ranks_set.add(kept_rank)
+                
+                for start in range(max(0, rank-4), min(9, rank+1)):
+                    straight_ranks = set(range(start, start+5))
+                    existing_count = len(board_ranks_set & straight_ranks)
+                    if existing_count >= 3:  # We'd have at least 4 with this card
+                        priority += 1.0
+                        break
+            
+            card_priorities.append((priority, card))
+        
+        # Sort by priority (descending)
+        card_priorities.sort(reverse=True)
+        
+        # Sample size based on street
+        sample_size = 15 if street == 0 else 10
+        
+        # Take the top cards based on priorities
+        top_cards = [card for _, card in card_priorities[:sample_size]]
+        
+        # Add some random low-priority cards for exploration
+        remaining_cards = [card for _, card in card_priorities[sample_size:]]
+        if remaining_cards and len(top_cards) < sample_size:
+            random_count = min(sample_size - len(top_cards), len(remaining_cards))
+            random_cards = random.sample(remaining_cards, random_count)
+            top_cards.extend(random_cards)
+        
+        return top_cards
+    
+    def _calculate_synergy_weight(self, new_card, kept_card, board, hand_type):
+        """
+        Calculate a synergy weight for a potential new card.
+        
+        Args:
+            new_card: Potential new card index
+            kept_card: Card we're keeping
+            board: Current board cards
+            hand_type: Current hand type
+            
+        Returns:
+            Weight value (higher means better synergy)
+        """
+        new_rank = new_card // 3
+        new_suit = new_card % 3
+        kept_rank = kept_card // 3
+        kept_suit = kept_card % 3
+        
+        # Base weight
+        weight = 1.0
+        
+        # Rank-based weights (higher ranks get higher weight)
+        weight += (new_rank / 8.0) * 0.5
+        
+        # Pair synergy
+        if new_rank == kept_rank:
+            weight += 1.5
+        
+        # Suit synergy
+        if new_suit == kept_suit:
+            weight += 0.5
+        
+        # Straight synergy
+        if abs(new_rank - kept_rank) <= 4:
+            weight += 0.3
+        
+        # Board synergy if available
+        if board:
+            board_ranks = [b // 3 for b in board]
+            board_suits = [b % 3 for b in board]
+            
+            # Pair with board
+            if new_rank in board_ranks:
+                weight += 1.0
+            
+            # Flush potential
+            same_suit_count = sum(1 for s in board_suits if s == new_suit)
+            if same_suit_count >= 2:
+                weight += 0.7
+            
+            # Straight potential with board
+            sorted_ranks = sorted(set(board_ranks + [kept_rank, new_rank]))
+            for i in range(len(sorted_ranks) - 3):
+                if sorted_ranks[i+3] - sorted_ranks[i] <= 4:
+                    weight += 0.7
+                    break
+        
+        return max(0.1, weight)  # Minimum weight of 0.1
     
     def _construct_opponent_range(self, opponent_tendencies, street, position):
         """
@@ -158,6 +421,19 @@ class Redraw:
         aggression = opponent_tendencies.get('aggression', 0.5)
         fold_frequency = opponent_tendencies.get('fold_frequency', 0.5)
         
+        # If opponent model has redraw information, incorporate it
+        has_redrawn = opponent_tendencies.get('has_redrawn', False)
+        redraw_street = opponent_tendencies.get('redraw_street', None)
+        
+        if 'get_redraw_insight' in opponent_tendencies:
+            # This is a method call, we can't directly access it
+            # But we know the opponent has redrawn information
+            if has_redrawn:
+                # Adjust based on typical redraw behavior
+                if redraw_street == street:
+                    # They redrawn this street, likely have improved their hand
+                    aggression = max(0.6, aggression)  # More aggressive
+                
         # Calculate range polarization
         # More aggressive opponents tend to have more polarized ranges
         polarization = min(1.0, aggression * 1.2)
@@ -209,6 +485,11 @@ class Redraw:
         Returns:
             Expected value estimate
         """
+        # Safety checks
+            
+        if street < 0 or street > 3:
+            street = 0  # Default to preflop
+        
         # Construct opponent range model
         opponent_range = self._construct_opponent_range(opponent_tendencies, street, position)
         
@@ -224,8 +505,11 @@ class Redraw:
             # On the flop, position matters more
             position_factor = 1.1 if position == "SB" else 0.9
         
-        # Calculate simplified EV
-        return hand_strength * position_factor * street_factor
+        # Calculate simplified EV with bounds checking
+        ev = hand_strength * position_factor * street_factor
+        
+        # Ensure EV is within valid range [0, 1]
+        return max(0.0, min(1.0, ev))
     
     def strategic_redraw(self, hole_cards, board, street, position, opponent_model=None):
         """
@@ -241,6 +525,16 @@ class Redraw:
         Returns:
             Tuple of (should_redraw, card_idx_to_discard)
         """
+        # Safety checks
+        if hole_cards is None or len(hole_cards) != 2:
+            return False, -1
+            
+        if board is None:
+            board = []
+            
+        if street > 1 or street < 0:
+            return False, -1
+            
         # Core redraw decision
         should_redraw, card_idx = self.should_redraw(
             hole_cards, board, street, position,
@@ -250,68 +544,72 @@ class Redraw:
         # If opponent model is available, make exploitative adjustments
         if opponent_model and hasattr(opponent_model, 'get_redraw_frequency'):
             # Extract opponent tendencies
-            opp_redraw_freq = opponent_model.get_redraw_frequency()
-            opp_fold_equity = opponent_model.get_fold_equity()
+            if hasattr(opponent_model, 'get_redraw_frequency'):
+                opp_redraw_freq = opponent_model.get_redraw_frequency()
+            else:
+                opp_redraw_freq = 0.5
+                
+            if hasattr(opponent_model, 'get_fold_equity'):
+                opp_fold_equity = opponent_model.get_fold_equity()
+            else:
+                opp_fold_equity = 0.5
+                
             opp_aggression = getattr(opponent_model, 'aggression', 0.5)
             
             # Current hand strength
             current_strength = self.hand_evaluator.get_hand_strength(hole_cards, board)
             
-            # Exploitative adjustments based on game theory principles
+            # Check if opponent has redrawn
+            has_redrawn = getattr(opponent_model, 'has_redrawn', False)
+            
+            # If opponent has redrawn, adjust our strategy
+            if has_redrawn:
+                redraw_street = getattr(opponent_model, 'redraw_street', None)
+                
+                # They've used their redraw, we can be more aggressive
+                if not should_redraw and current_strength > 0.4 and current_strength < 0.7:
+                    # Sometimes be more aggressive with medium hands
+                    # since opponent has no more redraws
+                    if random.random() < 0.3:
+                        return False, -1
             
             # Case 1: Opponent redraws very often - we should be more selective
             if opp_redraw_freq > 0.7:
                 # Only redraw very weak hands or for significant improvements
                 if current_strength > 0.4 and should_redraw:
                     # Verify the improvement is truly significant
-                    improvements = self._calculate_targeted_improvements(
-                        hole_cards, board, street, position, opponent_model.__dict__
-                    )
-                    
-                    # Only redraw for major improvements
-                    if improvements[0][0] < 0.15:  # Need 15% improvement
-                        return False, -1
+                    # Just use the card index already determined
+                    return should_redraw, card_idx
             
             # Case 2: Opponent rarely redraws - we can be more aggressive with redraws
             elif opp_redraw_freq < 0.3 and not should_redraw:
-                # Check for even marginal improvements
-                improvements = self._calculate_targeted_improvements(
-                    hole_cards, board, street, position, opponent_model.__dict__
-                )
-                
-                # Redraw for even small improvements
-                if improvements[0][0] > 0.05:  # Just 5% improvement needed
-                    return True, improvements[0][1]
+                # For weak hands, reconsider redrawing
+                if current_strength < 0.3:
+                    # Get the weaker card
+                    ranks = [card // 3 for card in hole_cards]
+                    lower_idx = 0 if ranks[0] < ranks[1] else 1
+                    
+                    # 40% chance to redraw weak hands against conservative opponents
+                    if random.random() < 0.4:
+                        return True, lower_idx
             
             # Case 3: Deceptive redraw with strong hands
             if not should_redraw and current_strength > 0.75:
                 # Calculate the balance between deception and value
-                deception_threshold = 0.1  # Base threshold
+                deception_threshold = 0.15  # Base threshold
                 
-                # Adjust based on opponent type:
-                # - Against observant opponents (lower fold equity), deception is more valuable
-                # - Against unobservant opponents (high fold equity), keeping value is better
+                # Adjust based on opponent type
                 deception_threshold *= (1.5 - opp_fold_equity)
                 
                 # Occasionally make a deceptive redraw
                 if random.random() < deception_threshold:
-                    # Determine which card to discard (typically the lower one)
+                    # Determine which card to discard (the lower one)
                     card1_rank = hole_cards[0] // 3
                     card2_rank = hole_cards[1] // 3
                     
                     # Discard lower card
                     discard_idx = 0 if card1_rank < card2_rank else 1
                     return True, discard_idx
-            
-            # Case 4: Information gathering early in the match
-            if opponent_model.hands_seen < 20 and random.random() < 0.2:
-                # Sometimes redraw even marginal hands to gather information
-                if 0.3 < current_strength < 0.6:
-                    # Calculate which card to discard
-                    improvements = self._calculate_targeted_improvements(
-                        hole_cards, board, street, position, opponent_model.__dict__
-                    )
-                    return True, improvements[0][1]
         
         return should_redraw, card_idx
     
@@ -333,6 +631,14 @@ class Redraw:
         improvements = []
         
         for card_idx in range(2):
+            # IMPORTANT FIX: Never discard an Ace for a lower card
+            if hole_cards[card_idx] // 3 == 8:  # Ace's rank is 8
+                other_card_rank = hole_cards[1-card_idx] // 3
+                if other_card_rank < 8:  # Other card is lower than Ace
+                    # Strongly negative improvement to avoid discarding Ace
+                    improvements.append((-1.0, card_idx))
+                    continue
+            
             other_card = hole_cards[1-card_idx]
             
             # Get unavailable cards

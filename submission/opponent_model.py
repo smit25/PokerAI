@@ -5,9 +5,9 @@ action_types = PokerEnv.ActionType
 
 class OpponentModel:
     """
-    Advanced opponent modeling using Bayesian inference and pattern recognition.
+    Improved opponent modeling using Bayesian inference and pattern recognition.
     Implements real-time adaptation to exploit opponent tendencies and detect bluffing patterns.
-    Uses efficient data structures for quick retrieval during decision making.
+    Optimized for single-game rounds with reset after each match and single redraw limitation.
     """
     
     def __init__(self):
@@ -16,10 +16,11 @@ class OpponentModel:
         self.fold_frequency = 0.5  # How often they fold to bets
         self.bluff_frequency = 0.3  # Estimated bluffing frequency
         
-        # Redraw statistics with uncertainty tracking
-        self.redraw_count = 0
-        self.hands_seen = 0
-        self.redraw_history = []  # List of (discarded_card, drawn_card, street)
+        # Redraw tracking - optimized for single redraw
+        self.has_redrawn = False
+        self.redraw_street = None  # Which street they redrawn on (0=preflop, 1=flop)
+        self.discarded_card = None
+        self.drawn_card = None
         
         # Bayesian confidence tracking - how certain we are about our model
         self.aggression_confidence = 1.0  # Increases with more observations
@@ -57,7 +58,8 @@ class OpponentModel:
         self.texture_response = defaultdict(list)  # Response to different board textures
         
         # Adaptive learning rate - gives more weight to recent observations
-        self.learning_rate = 0.2  # Start with moderate learning rate
+        # Higher learning rate for single-game adaptation
+        self.learning_rate = 0.3  # Start with high learning rate for faster adaptation
         
         # Positional tendencies
         self.position_aggression = {
@@ -77,11 +79,6 @@ class OpponentModel:
         """
         # Record action for this street with temporal weighting
         self.actions_by_street[street].append(action)
-        
-        # Keep only recent actions (more weight to recent actions)
-        max_actions = 50  # Keep at most 50 actions per street
-        if len(self.actions_by_street[street]) > max_actions:
-            self.actions_by_street[street] = self.actions_by_street[street][-max_actions:]
         
         # Update aggression metric with Bayesian updating
         if action == action_types.RAISE.value:
@@ -104,9 +101,6 @@ class OpponentModel:
             # Track bet sizing for pattern detection
             if bet_size is not None:
                 self.bet_sizing_by_street[street].append(bet_size)
-                # Keep only recent bet sizes
-                if len(self.bet_sizing_by_street[street]) > max_actions:
-                    self.bet_sizing_by_street[street] = self.bet_sizing_by_street[street][-max_actions:]
         
         elif action == action_types.CALL.value:
             self.aggression = (1 - self.learning_rate) * self.aggression + self.learning_rate * 0.5
@@ -125,140 +119,69 @@ class OpponentModel:
             self.fold_frequency = (1 - self.learning_rate) * self.fold_frequency + self.learning_rate * posterior
         
         # Update confidence - more observations increase confidence
-        self.aggression_confidence = min(10.0, self.aggression_confidence + 0.05)
-        self.fold_confidence = min(10.0, self.fold_confidence + 0.05)
+        self.aggression_confidence = min(5.0, self.aggression_confidence + 0.1)
+        self.fold_confidence = min(5.0, self.fold_confidence + 0.1)
         
         # Track action sequences for pattern detection
         # Last 3 actions as a sequence
         all_actions = []
         for s in range(4):
-            all_actions.extend(self.actions_by_street[s][-3:])
+            all_actions.extend(self.actions_by_street[s])
         
         if len(all_actions) >= 3:
             seq = tuple(all_actions[-3:])
             self.action_sequences[seq] += 1
     
-    def update_from_showdown(self, opponent_cards, board, opponent_actions, won_hand):
-        """
-        Update model based on showdown information using advanced pattern recognition.
-        Essential for bluff detection and hand reading.
-        
-        Args:
-            opponent_cards: Opponent's hole cards at showdown
-            board: Final board cards
-            opponent_actions: List of opponent actions leading to showdown
-            won_hand: Whether opponent won the hand
-        """
-        # Record detailed showdown information
-        showdown_record = {
-            'cards': opponent_cards,
-            'board': board,
-            'actions': opponent_actions,
-            'won': won_hand,
-            'street_actions': {s: [] for s in range(4)}  # Actions by street
-        }
-        
-        # Classify actions by street for deeper analysis
-        current_street = 0
-        for action in opponent_actions:
-            showdown_record['street_actions'][current_street].append(action)
-            # Detect street changes based on action patterns
-            if action in [action_types.CALL.value, action_types.CHECK.value] and len(showdown_record['street_actions'][current_street]) >= 2:
-                if current_street < 3:
-                    current_street += 1
-        
-        self.showdown_history.append(showdown_record)
-        
-        # Keep limited history for efficiency
-        max_showdowns = 100
-        if len(self.showdown_history) > max_showdowns:
-            self.showdown_history = self.showdown_history[-max_showdowns:]
-        
-        # Detect bluffs by analyzing hand strength vs. betting pattern
-        if opponent_actions and opponent_actions[-1] == action_types.RAISE.value:
-            # Opponent's last action was a bet/raise
-            
-            # Calculate hand strength at showdown
-            # This would use HandEvaluator in actual implementation
-            hand_strength = self._estimate_hand_strength(opponent_cards, board)
-            
-            # Define bluff threshold - hands below this strength are considered bluffs when bet
-            bluff_threshold = 0.4  # 40th percentile or lower
-            
-            was_bluffing = hand_strength < bluff_threshold
-            
-            if was_bluffing:
-                self.bluffs_detected += 1
-            else:
-                self.value_bets_detected += 1
-            
-            # Update bluff frequency with Bayesian updating
-            total_aggressive_actions = self.bluffs_detected + self.value_bets_detected
-            if total_aggressive_actions > 0:
-                # Prior probability
-                prior = self.bluff_frequency
-                
-                # New evidence (whether this bet was a bluff)
-                likelihood = 0.8 if was_bluffing else 0.2
-                
-                # Bayesian update
-                posterior = (likelihood * prior) / (likelihood * prior + (1 - likelihood) * (1 - prior))
-                
-                # Apply update with learning rate
-                self.bluff_frequency = (1 - self.learning_rate) * self.bluff_frequency + self.learning_rate * posterior
-                
-                # Increase confidence in our bluff model
-                self.bluff_confidence = min(10.0, self.bluff_confidence + 0.1)
-        
-        # Analyze board texture vs. betting pattern
-        texture = self._classify_board_texture(board)
-        self.texture_response[texture].append({
-            'actions': opponent_actions,
-            'hand_strength': self._estimate_hand_strength(opponent_cards, board),
-            'won': won_hand
-        })
-
 
     def update_from_redraw(self, discarded_card, drawn_card, street):
         """
-        Update model based on opponent's redraw action with detailed pattern analysis.
+        Update model based on opponent's redraw action with detailed analysis.
+        Optimized for single redraw per match rule.
         
         Args:
             discarded_card: Card index that was discarded
             drawn_card: Card index that was drawn
             street: Current street (0-1)
         """
-        if street > 1:
-            return
+        if street > 1 or self.has_redrawn:
+            return  # Can only redraw once before turn
         
-        self.redraw_count += 1
-        self.redraw_history.append((discarded_card, drawn_card, street))
+        self.has_redrawn = True
+        self.redraw_street = street
+        self.discarded_card = discarded_card
+        self.drawn_card = drawn_card
         
-        # Advanced analysis of discarded cards
-        # Track what types of cards are being discarded
+        # Analyze what kind of card was discarded
         discarded_rank = discarded_card // 3
         discarded_suit = discarded_card % 3
         
-        # Track if opponent tends to discard high cards or low cards
-        if discarded_rank >= 7:  # 9 or A
-            self.high_card_discard = getattr(self, 'high_card_discard', 0) + 1
-        else:
-            self.low_card_discard = getattr(self, 'low_card_discard', 0) + 1
+        # Check if they discarded a high card (implies risk-averse play)
+        is_high_card = discarded_rank >= 7  # 9 or A
         
+        # Check if drawn card is high (could imply chasing high cards)
+        drawn_rank = drawn_card // 3
+        is_drawn_high = drawn_rank >= 7
         
-        # Update redraw frequency model with uncertainty
-        if hasattr(self, 'redraw_frequency_by_street'):
-            self.redraw_frequency_by_street[street] = (
-                self.redraw_frequency_by_street[street][0] + 1,
-                self.redraw_frequency_by_street[street][1] + 1
-            )
-        else:
-            self.redraw_frequency_by_street = {
-                0: (1, 1),  # (redraws, hands seen)
-                1: (0, 0)
-            }
-            if street == 1:
-                self.redraw_frequency_by_street[1] = (1, 1)
+        # Analyze discard/draw pattern to infer strategy
+        if is_high_card and not is_drawn_high:
+            # Discarded high card for lower card - likely building a specific hand
+            # Adjust bluff detection - this player may be more pattern-focused
+            self.bluff_frequency = (1 - self.learning_rate) * self.bluff_frequency + self.learning_rate * 0.2
+        
+        elif not is_high_card and is_drawn_high:
+            # Discarded low card for high card - likely chasing high cards
+            # More straightforward play, adjust bluff frequency higher (less sophisticated)
+            self.bluff_frequency = (1 - self.learning_rate) * self.bluff_frequency + self.learning_rate * 0.4
+            
+        # Redrawing on flop is more desperate than preflop
+        if street == 1:  # Flop
+            # More likely to be drawing to complete a hand - less likely bluffing
+            self.bluff_frequency = (1 - self.learning_rate) * self.bluff_frequency + self.learning_rate * 0.2
+            # More aggressive play
+            self.aggression = (1 - self.learning_rate) * self.aggression + self.learning_rate * 0.6
+        else:  # Preflop
+            # Standard adjustments based on typical preflop strategy
+            self.aggression = (1 - self.learning_rate) * self.aggression + self.learning_rate * 0.5
     
     def _estimate_hand_strength(self, hole_cards, board):
         """
@@ -313,143 +236,156 @@ class OpponentModel:
             else:
                 return 0.1  # Low high card
     
-    def _classify_board_texture(self, board):
-        """
-        Classify the board texture for pattern recognition.
-        
-        Args:
-            board: List of board card indices
-            
-        Returns:
-            String representing the board texture
-        """
-        if not board:
-            return "empty"
-            
-        ranks = [card // 3 for card in board]
-        suits = [card % 3 for card in board]
-        
-        # Count ranks and suits
-        rank_counts = {}
-        for r in ranks:
-            rank_counts[r] = rank_counts.get(r, 0) + 1
-        
-        suit_counts = {}
-        for s in suits:
-            suit_counts[s] = suit_counts.get(s, 0) + 1
-        
-        # Check for paired board
-        paired = max(rank_counts.values() if rank_counts else [0]) >= 2
-        
-        # Check for flush potential
-        flush_draw = max(suit_counts.values() if suit_counts else [0]) >= 3
-        
-        # Check for straight potential
-        straight_potential = False
-        if len(set(ranks)) >= 3:
-            sorted_ranks = sorted(set(ranks))
-            for i in range(len(sorted_ranks) - 2):
-                if sorted_ranks[i+2] - sorted_ranks[i] <= 4:
-                    straight_potential = True
-                    break
-        
-        # Check for high cards
-        high_card_count = sum(1 for r in ranks if r >= 7)  # 9 or A
-        
-        # Classify texture
-        if paired and flush_draw:
-            return "paired_flush_draw"
-        elif paired:
-            return "paired"
-        elif flush_draw and straight_potential:
-            return "draw_heavy"
-        elif flush_draw:
-            return "flush_draw"
-        elif straight_potential:
-            return "straight_draw"
-        elif high_card_count >= 2:
-            return "high_cards"
-        else:
-            return "dry_low"
-            
     def update_from_hand(self, hand_info):
         """
-        Update overall stats at the end of a hand with pattern detection.
+        Update overall stats at the end of a hand.
         
         Args:
             hand_info: Dictionary of hand information
         """
-        self.hands_seen += 1
-        
-        # Adjust learning rate as we accumulate more hands
-        # Start aggressive, gradually become more stable
-        if self.hands_seen <= 10:
-            self.learning_rate = 0.3  # Fast learning at start
-        elif self.hands_seen <= 50:
-            self.learning_rate = 0.2  # Moderate learning
-        else:
-            self.learning_rate = 0.1  # Slower, more stable learning
+        # Adjust learning rate to be more aggressive for single-game adaptation
+        self.learning_rate = 0.3
     
-    def get_redraw_frequency(self):
+    def get_redraw_insight(self):
         """
-        Get opponent's overall redraw frequency with confidence weighting.
+        Get insights from opponent's redraw behavior.
         
         Returns:
-            Float representing frequency (0-1)
+            Dictionary with redraw insights
         """
-        if self.hands_seen == 0:
-            return 0.5  # Default assumption
+        if not self.has_redrawn:
+            return {
+                'has_redrawn': False,
+                'likely_drawing_to': 'unknown',
+                'hand_quality': 'unknown'
+            }
         
-        # Basic frequency
-        basic_freq = self.redraw_count / self.hands_seen
+        discarded_rank = self.discarded_card // 3
+        discarded_suit = self.discarded_card % 3
+        drawn_rank = self.drawn_card // 3
+        drawn_suit = self.drawn_card % 3
         
-        # If we have street-specific data, use that with weighting
-        if hasattr(self, 'redraw_frequency_by_street'):
-            preflop_freq = self.redraw_frequency_by_street[0][0] / max(1, self.redraw_frequency_by_street[0][1])
-            flop_freq = self.redraw_frequency_by_street[1][0] / max(1, self.redraw_frequency_by_street[1][1])
-            
-            # Weight based on confidence
-            preflop_confidence = min(1.0, self.redraw_frequency_by_street[0][1] / 10.0)
-            flop_confidence = min(1.0, self.redraw_frequency_by_street[1][1] / 10.0)
-            
-            # Combined weighted frequency
-            weighted_freq = (
-                preflop_freq * preflop_confidence + 
-                flop_freq * flop_confidence + 
-                0.5 * (2 - preflop_confidence - flop_confidence)
-            ) / 2.0
-            
-            # Blend with basic frequency
-            return 0.7 * weighted_freq + 0.3 * basic_freq
-            
-        return basic_freq
+        likely_drawing_to = 'unknown'
+        hand_quality = 'unknown'
+        
+        # If they discarded a high card
+        if discarded_rank >= 7:  # 9 or A
+            hand_quality = 'medium-strong'  # They likely have something specific
+            # They're willing to give up a high card, so likely building a specific hand
+            if drawn_suit == discarded_suit:
+                likely_drawing_to = 'flush'
+            else:
+                likely_drawing_to = 'specific_pattern'
+        else:
+            # If they discarded a low card
+            if drawn_rank >= 7:  # Drew a high card
+                hand_quality = 'weak-medium'  # They're trying to improve
+                likely_drawing_to = 'high_card_strength'
+            else:
+                # Both discarded and drew low cards
+                hand_quality = 'weak'
+                likely_drawing_to = 'specific_pattern'
+                
+        # Adjust based on which street they redrawn
+        if self.redraw_street == 1:  # Flop
+            # Redrawing on flop implies more desperation
+            if hand_quality == 'medium-strong':
+                hand_quality = 'medium'
+            elif hand_quality == 'weak-medium':
+                hand_quality = 'weak'
+        
+        return {
+            'has_redrawn': True,
+            'redraw_street': self.redraw_street,
+            'likely_drawing_to': likely_drawing_to,
+            'hand_quality': hand_quality,
+            'discarded_high': discarded_rank >= 7,
+            'drew_high': drawn_rank >= 7
+        }
     
     def get_bluff_frequency(self):
         """
-        Get opponent's estimated bluff frequency with confidence weighting.
+        Get opponent's estimated bluff frequency based on current game state only.
         
         Returns:
             Float representing bluff frequency (0-1)
         """
-        # Blend prior knowledge with observed frequency
-        # As confidence increases, we rely more on observed frequency
-        confidence_weight = min(1.0, self.bluff_confidence / 5.0)
+        # Base bluff frequency - start with a reasonable default
+        base_bluff_freq = 0.3
         
-        # Calculate observed frequency
-        total_aggressive_actions = self.bluffs_detected + self.value_bets_detected
-        if total_aggressive_actions > 10:
-            observed_frequency = self.bluffs_detected / total_aggressive_actions
-        else:
-            # Not enough data, rely more on prior
-            observed_frequency = 0.3  # Average bluff frequency
-            confidence_weight *= total_aggressive_actions / 10.0
+        # If opponent has redrawn, this gives us concrete information to work with
+        if self.has_redrawn:
+            redraw_insight = self.get_redraw_insight()
+            
+            if redraw_insight['hand_quality'] == 'weak':
+                # Weak hand means more likely to bluff
+                bluff_adjustment = 0.2
+            elif redraw_insight['hand_quality'] == 'medium':
+                bluff_adjustment = 0.1
+            else:
+                # Strong hand means less likely to bluff
+                bluff_adjustment = -0.1
+                    
+            # Apply the adjustment
+            base_bluff_freq = max(0.1, min(0.9, base_bluff_freq + bluff_adjustment))
+            
+            # Redraw street-specific adjustments
+            if self.redraw_street == 1:  # Flop
+                # Redrawing on flop is usually targeting a specific draw
+                # Less likely to be pure bluffing later if they made this investment
+                base_bluff_freq -= 0.05
+            
+            # Card-specific adjustments
+            if hasattr(self, 'discarded_card') and hasattr(self, 'drawn_card'):
+                discarded_rank = self.discarded_card // 3
+                drawn_rank = self.drawn_card // 3
+                
+                # If they discarded a high card for a lower card, they're building a pattern
+                # Less likely to be purely bluffing
+                if discarded_rank >= 7 and drawn_rank < discarded_rank:
+                    base_bluff_freq -= 0.1
+                
+                # If they discarded a low card to draw a high card, classic value play
+                # Still might bluff if they miss, but less likely overall
+                elif discarded_rank < 7 and drawn_rank >= 7:
+                    base_bluff_freq -= 0.05
         
-        # Blend with prior based on confidence
-        return (observed_frequency * confidence_weight) + (0.3 * (1 - confidence_weight))
-    
+        # Current street aggression patterns
+        current_actions = []
+        for street, actions in self.actions_by_street.items():
+            if actions:  # Only consider streets with actions
+                current_actions.extend(actions)
+        
+        if current_actions:
+            # Analyze action patterns in current game
+            raise_count = current_actions.count(action_types.RAISE.value)
+            check_count = current_actions.count(action_types.CHECK.value)
+            
+            # Lots of raises often indicates either strong hands or bluffing
+            if len(current_actions) >= 3:
+                raise_ratio = raise_count / len(current_actions)
+                
+                # Very high raise frequency usually means more bluffing
+                if raise_ratio > 0.7:
+                    base_bluff_freq += 0.15
+                # Moderate raising with some checking often indicates honest play
+                elif 0.3 <= raise_ratio <= 0.5 and check_count > 0:
+                    base_bluff_freq -= 0.1
+        
+        # Confidence weighting - in a single game, we have limited confidence
+        confidence = min(0.6, self.aggression_confidence / 6.0)  # Cap at 60%
+        
+        # Default bluff frequency to blend with
+        default_freq = 0.3
+        
+        # Final weighted result
+        return base_bluff_freq * confidence + default_freq * (1.0 - confidence)
+
+
     def get_aggression_factor(self):
         """
         Get opponent's aggression factor with positional weighting.
+        Factors in redraw insights.
         
         Returns:
             Float representing aggression (0-1)
@@ -463,65 +399,109 @@ class OpponentModel:
         # Calculate confidence-weighted result
         confidence_weight = min(1.0, self.aggression_confidence / 5.0)
         
+        # If opponent has redrawn, factor that into aggression estimate
+        if self.has_redrawn:
+            redraw_insight = self.get_redraw_insight()
+            
+            if redraw_insight['hand_quality'] == 'strong':
+                # Strong hand correlates with more aggression
+                aggression_adjustment = 0.2
+            elif redraw_insight['hand_quality'] == 'medium':
+                aggression_adjustment = 0.1
+            elif redraw_insight['hand_quality'] == 'weak':
+                # Weak hand typically means less aggression
+                aggression_adjustment = -0.1
+            else:
+                aggression_adjustment = 0
+                
+            # Apply redraw-based adjustment
+            base_aggression = max(0.1, min(0.9, base_aggression + aggression_adjustment))
+        
         return (base_aggression * 0.7 + positional_aggression * 0.3) * confidence_weight + 0.5 * (1 - confidence_weight)
     
+
     def get_fold_equity(self):
         """
         Calculate fold equity against this opponent with pattern recognition.
+        Takes into account redraw information, optimized for single-match scenario.
         
         Returns:
             Float between 0-1 representing likelihood of successful bluff
         """
-        # Higher fold frequency means more fold equity
-        base_fold_equity = self.fold_frequency
+        base_fold_equity = 0.4
         
         # Adjust based on aggression (more aggressive players fold less)
         aggression_adjustment = -0.2 * (self.aggression - 0.5)
         
-        # Adjust based on recent tendencies (weighted recency)
-        recent_actions = []
-        for street in range(4):
-            actions = self.actions_by_street[street][-10:] if self.actions_by_street[street] else []
-            recent_actions.extend(actions)
+        # If opponent has redrawn, factor that into fold equity
+        if self.has_redrawn:
+            redraw_insight = self.get_redraw_insight()
+            
+            if redraw_insight['hand_quality'] == 'strong':
+                # Strong hand means less likely to fold
+                fold_adjustment = -0.2
+            elif redraw_insight['hand_quality'] == 'medium':
+                fold_adjustment = -0.1
+            elif redraw_insight['hand_quality'] == 'weak':
+                # Weak hand means more likely to fold
+                fold_adjustment = 0.2
+            else:
+                fold_adjustment = 0
+                
+            # Apply redraw-based fold equity adjustment
+            base_fold_equity = max(0.1, min(0.9, base_fold_equity + fold_adjustment))
+            
+            # Additional adjustments based on redraw street
+            if self.redraw_street == 1:  # Redrew on flop
+                # Redrawing on flop often indicates desperation, so more likely to fold later
+                base_fold_equity += 0.1
+            
+            # Discarded/drawn card analysis
+            if hasattr(self, 'discarded_card') and hasattr(self, 'drawn_card'):
+                discarded_rank = self.discarded_card // 3
+                drawn_rank = self.drawn_card // 3
+                
+                # If they discarded a high card (9 or A) for a lower card
+                if discarded_rank >= 7 and drawn_rank < discarded_rank:
+                    # They're playing for a specific pattern - less likely to fold
+                    base_fold_equity -= 0.1
+                
+                # If they discarded a low card for a higher card
+                elif discarded_rank < 7 and drawn_rank > discarded_rank:
+                    # They're chasing higher cards - likely weaker hand, more likely to fold
+                    base_fold_equity += 0.1
         
-        if recent_actions:
-            recent_folds = recent_actions.count(action_types.FOLD.value)
-            recent_fold_frequency = recent_folds / len(recent_actions)
-            recency_adjustment = 0.3 * (recent_fold_frequency - self.fold_frequency)
-        else:
-            recency_adjustment = 0
+        # Only look at current street actions
+        current_street_actions = self.actions_by_street.get(max(0, min(3, self.redraw_street or 0)), [])
         
-        # Pattern-based adjustments from observed sequences
-        pattern_adjustment = 0
+        if current_street_actions:
+            # Calculate aggression ratio from actual actions
+            raise_count = current_street_actions.count(action_types.RAISE.value)
+            fold_count = current_street_actions.count(action_types.FOLD.value)
+            
+            # Only make adjustments if we have enough actions
+            if len(current_street_actions) >= 2:
+                action_ratio = (raise_count - fold_count) / max(1, len(current_street_actions))
+                
+                # Aggressive action ratio means less fold equity
+                aggression_adjustment = -0.15 * action_ratio
         
-        # Get most recent action sequence
-        all_actions = []
-        for street in range(4):
-            all_actions.extend(self.actions_by_street[street])
-        
-        if len(all_actions) >= 3:
-            # Check if this sequence commonly leads to folds
-            recent_seq = tuple(all_actions[-3:])
-            if recent_seq in self.action_sequences and self.action_sequences[recent_seq] >= 3:
-                # Check if this sequence is followed by folds
-                fold_actions = all_actions.count(action_types.FOLD.value)
-                if fold_actions > 0:
-                    pattern_adjustment = 0.1  # Slight adjustment based on pattern
-        
-        # Confidence-based blending with default
-        confidence_weight = min(1.0, self.fold_confidence / 5.0)
+        # Since we have low confidence in a single-match scenario, weight towards default
+        confidence_weight = min(0.7, self.aggression_confidence / 7.0)  # Max 70% confidence
         
         # Calculate final fold equity
-        fold_equity = base_fold_equity + aggression_adjustment + recency_adjustment + pattern_adjustment
+        fold_equity = base_fold_equity + aggression_adjustment
         
         # Blend with default based on confidence
         default_equity = 0.5  # Average fold equity
         
         return fold_equity * confidence_weight + default_equity * (1 - confidence_weight)
     
+
     def adjust_hand_strength(self, base_strength, street, is_bluff_candidate=False):
         """
         Adjust effective hand strength based on opponent tendencies with pattern matching.
+        Takes into account redraw information for more accurate adjustments.
         
         Args:
             base_strength: Raw hand strength (0-1)
@@ -559,72 +539,32 @@ class OpponentModel:
         if bluff_frequency > 0.4 and street >= 2 and 0.3 < base_strength < 0.7:
             adjusted_strength += 0.1
         
-        # On later streets, pattern recognition becomes more important
-        if street >= 2 and self.showdown_history:
-            # Pattern-based adjustment from showdown analysis
-            pattern_adj = self._get_pattern_based_adjustment(base_strength, street)
-            adjusted_strength += pattern_adj
+        # Factor in redraw information
+        if self.has_redrawn:
+            redraw_insight = self.get_redraw_insight()
+            
+            # If we're past the redraw street, we can use this information more confidently
+            if street > self.redraw_street:
+                if redraw_insight['hand_quality'] == 'strong':
+                    # They have a strong hand, we need a stronger hand to continue
+                    if is_bluff_candidate:
+                        adjusted_strength -= 0.15  # Bluffing is less effective
+                    else:
+                        adjusted_strength -= 0.1   # Need stronger value hand
+                
+                elif redraw_insight['hand_quality'] == 'weak':
+                    # They have a weak hand, we can be more aggressive
+                    if is_bluff_candidate:
+                        adjusted_strength += 0.15  # Bluffing is more effective
+                    else:
+                        adjusted_strength += 0.05  # Weaker value hands are playable
+            
+            # Redraw on flop is particularly significant
+            if self.redraw_street == 1 and street >= 2:
+                # They redrawn on flop - they're likely drawing to something specific
+                if redraw_insight['likely_drawing_to'] == 'flush' and street == 2:
+                    # If they're drawing to a flush and we're on the turn
+                    # They might have completed their hand - be more cautious
+                    adjusted_strength -= 0.1
         
         return min(1.0, max(0.0, adjusted_strength))
-    
-    def _get_pattern_based_adjustment(self, hand_strength, street):
-        """
-        Get pattern-based adjustment based on showdown history.
-        
-        Args:
-            hand_strength: Current hand strength
-            street: Current street
-            
-        Returns:
-            Adjustment value (-0.2 to 0.2)
-        """
-        # Not enough data for pattern recognition
-        if len(self.showdown_history) < 5:
-            return 0.0
-        
-        # Look for patterns in similar situations
-        similar_situations = []
-        
-        for showdown in self.showdown_history:
-            # Similar hand strength situations
-            if 'hand_strength' in showdown and abs(showdown.get('hand_strength', 0) - hand_strength) < 0.2:
-                similar_situations.append(showdown)
-        
-        # Not enough similar situations
-        if len(similar_situations) < 3:
-            return 0.0
-        
-        # Analyze betting patterns in similar situations
-        aggression_count = 0
-        passive_count = 0
-        
-        for situation in similar_situations:
-            actions = situation.get('actions', [])
-            if not actions:
-                continue
-                
-            street_actions = situation.get('street_actions', {}).get(street, [])
-            if not street_actions:
-                continue
-            
-            # Check if they played aggressively or passively
-            if action_types.RAISE.value in street_actions:
-                aggression_count += 1
-            elif action_types.CHECK.value in street_actions or action_types.CALL.value in street_actions:
-                passive_count += 1
-        
-        # Calculate adjustment based on tendency
-        total = aggression_count + passive_count
-        if total < 3:
-            return 0.0
-            
-        aggression_ratio = aggression_count / total
-        
-        # If they're usually aggressive with similar hands, we should be more cautious
-        if aggression_ratio > 0.7:
-            return -0.1
-        # If they're usually passive with similar hands, we can be more aggressive
-        elif aggression_ratio < 0.3:
-            return 0.1
-            
-        return 0.0

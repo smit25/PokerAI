@@ -1,5 +1,4 @@
 import random
-from enum import Enum
 from collections import defaultdict
 from gym_env import PokerEnv
 
@@ -91,8 +90,7 @@ class DecisionEngine:
         
         # First, check if we can/should use the redraw option
         if valid_actions[action_types.DISCARD.value]:
-            should_redraw, card_idx = self.redraw_strategy.strategic_redraw(
-                my_cards, community_cards, street, position, self.opponent_model)
+            should_redraw, card_idx = self.redraw_strategy.strategic_redraw(my_cards, community_cards, street, position, self.opponent_model)
             
             # TODO
             if should_redraw:
@@ -120,7 +118,7 @@ class DecisionEngine:
         hand_strength = self.hand_evaluator.get_hand_strength(my_cards)
         
         # Convert to tier (1-5)
-        tier = min(5, max(1, int(hand_strength * 5) + 1))
+        tier = min(5, max(1, int(hand_strength * 5) + 1)) ## TODO
         
         base_strategy = self.preflop_strategy[position][tier]
         
@@ -202,15 +200,13 @@ class DecisionEngine:
             pot_odds = 0
         
         # Check if this is a good bluffing spot
-        # is_bluff_candidate = hand_strength > self.bluff_threshold
-        # if is_bluff_candidate:
-        #     bluff_equity = self.opponent_model.get_fold_equity()
-        #     # Adjust strength for potential bluff
-        #     bluff_adjusted_strength = self.opponent_model.adjust_hand_strength(
-        #         hand_strength, street, is_bluff_candidate=True)
-        # else:
-        #     bluff_adjusted_strength = adjusted_strength
-        bluff_adjusted_strength = adjusted_strength
+        is_bluff_candidate = hand_strength > 0.5
+        if is_bluff_candidate:
+            # Adjust strength for potential bluff
+            bluff_adjusted_strength = self.opponent_model.adjust_hand_strength(
+                hand_strength, street, is_bluff_candidate=True)
+        else:
+            bluff_adjusted_strength = adjusted_strength
         
         
         if call_amount == 0:  # We can check
@@ -229,7 +225,7 @@ class DecisionEngine:
             # Medium hand - thin value bet or check
             elif bluff_adjusted_strength > 0.5:
                 # On later streets, more likely to bet for value
-                if street >= 2 and random.random() < bluff_adjusted_strength and valid_actions[action_types.RAISE.value]:
+                if street >= 2 and valid_actions[action_types.RAISE.value]:
                     bet_size = max(min_raise, int(pot_size * self.bet_sizing['small']))
                     bet_size = min(max_raise, bet_size)
                     return (action_types.RAISE.value, bet_size, -1)
@@ -238,18 +234,18 @@ class DecisionEngine:
             
             # Weak hand - check or bluff
             else:
-                # # Consider bluffing
-                # if is_bluff_candidate and random.random() < self.bluff_frequency and valid_actions[action_types.RAISE.value]:
-                #     # Smaller bluff on flop, larger on turn/river
-                #     if street == 1:
-                #         bet_size = max(min_raise, int(pot_size * self.bet_sizing['small']))
-                #     else:
-                #         bet_size = max(min_raise, int(pot_size * self.bet_sizing['medium']))
+                # Consider bluffing
+                if is_bluff_candidate and random.random() < 0.25 and valid_actions[action_types.RAISE.value]:
+                    # Smaller bluff on flop, larger on turn/river
+                    if street == 1:
+                        bet_size = max(min_raise, int(pot_size * self.bet_sizing['small']))
+                    else:
+                        bet_size = max(min_raise, int(pot_size * self.bet_sizing['medium']))
                     
-                #     bet_size = min(max_raise, bet_size)
-                #     return (action_types.RAISE.value, bet_size, -1)
-                # else:
-                return (action_types.CHECK.value, 0, -1)
+                    bet_size = min(max_raise, bet_size)
+                    return (action_types.RAISE.value, bet_size, -1)
+                else:
+                    return (action_types.CHECK.value, 0, -1)
         
         else:  # Facing a bet
             # Strong hand - raise for value
@@ -260,7 +256,7 @@ class DecisionEngine:
             # Good hand - call or raise
             elif adjusted_strength > 0.6:
                 # Sometimes raise as a semi-bluff or for value
-                if random.random() < adjusted_strength - 0.5 and valid_actions[action_types.RAISE.value]:
+                if random.random() < adjusted_strength - 0.2 and valid_actions[action_types.RAISE.value]:
                     raise_size = max(min_raise, min(max_raise, int(call_amount * 2.5)))
                     return (action_types.RAISE.value, raise_size, -1)
                 elif valid_actions[action_types.CALL.value]:
@@ -271,10 +267,6 @@ class DecisionEngine:
                 if valid_actions[action_types.CALL.value]:
                     return (action_types.CALL.value, 0, -1)
             
-            # Weak hand - consider bluff-raising or folding
-            # elif is_bluff_candidate and random.random() < bluff_equity / 2 and valid_actions[action_types.RAISE.value]:
-            #     raise_size = max(min_raise, min(max_raise, int(call_amount * 2.5)))
-            #     return (action_types.RAISE.value, raise_size, -1)
         
         # Default: fold if we have to call, check if we can
         if call_amount > 0:
@@ -294,7 +286,6 @@ class DecisionEngine:
         opp_bet = obs["opp_bet"]
         
         aggression = self.opponent_model.get_aggression_factor()
-        fold_equity = self.opponent_model.get_fold_equity()
         
         # If we're in BB facing a raise
         if position == "BB" and opp_bet > my_bet:
@@ -309,23 +300,19 @@ class DecisionEngine:
                     adjusted_strategy['action'] = action_types.CALL
         
         # If we're in SB and have initiative
-        elif position == "SB" and my_bet == opp_bet:
-            # If opponent folds often, bluff more
-            if fold_equity > 0.7 and hand_strength < 0.4:
-                # Upgrade action one level
-                if adjusted_strategy['action'] == action_types.FOLD:
-                    adjusted_strategy['action'] = action_types.CALL
-                elif adjusted_strategy['action'] == action_types.CALL:
-                    adjusted_strategy['action'] = action_types.RAISE
-                    adjusted_strategy['sizing'] = 'small'
+        elif position == "SB":
+            if adjusted_strategy['action'] == action_types.FOLD:
+                adjusted_strategy['action'] = action_types.CALL
+            elif adjusted_strategy['action'] == action_types.CALL:
+                adjusted_strategy['action'] = action_types.RAISE
+                adjusted_strategy['sizing'] = 'small'
         
-        # Randomization to avoid predictability
-        # Occasionally upgrade or downgrade action
-        if random.random() < 0.1:
+        # Randomization to avoid predictability, Occasionally upgrade or downgrade action
+        if random.random() < 0.15:
             if adjusted_strategy['action'] == action_types.CALL:
                 if random.random() < 0.5:
                     adjusted_strategy['action'] = action_types.RAISE
-                    adjusted_strategy['sizing'] = 'small'
+                    adjusted_strategy['sizing'] = 'medium'
                 else:
                     adjusted_strategy['action'] = action_types.FOLD
             
@@ -333,7 +320,7 @@ class DecisionEngine:
                 # Occasionally change sizing
                 sizings = ['small', 'medium', 'large', 'overbet']
                 current_idx = sizings.index(adjusted_strategy['sizing'])
-                new_idx = max(0, min(3, current_idx + random.choice([-1, 1])))
+                new_idx = min(3, current_idx + 1)
                 adjusted_strategy['sizing'] = sizings[new_idx]
         
         return adjusted_strategy

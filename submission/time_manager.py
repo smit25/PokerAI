@@ -19,8 +19,8 @@ class TimeManager:
         }
         
         self.phase_times = {1:500, 2:1000, 3:1500}
-        self.tournament_phase = 1  # Default to Phase 1
-        self.total_time_bank = self.phase_times[self.tournament_phase]  # Default to Phase 1 (500 seconds)
+        self.tournament_phase = 2 
+        self.total_time_bank = self.phase_times[self.tournament_phase] 
         
         # Dynamic time allocation using value-based approach
         self.time_allocation = {
