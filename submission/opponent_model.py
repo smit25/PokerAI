@@ -228,6 +228,9 @@ class OpponentModel:
             drawn_card: Card index that was drawn
             street: Current street (0-1)
         """
+        if street > 1:
+            return
+        
         self.redraw_count += 1
         self.redraw_history.append((discarded_card, drawn_card, street))
         
@@ -242,10 +245,6 @@ class OpponentModel:
         else:
             self.low_card_discard = getattr(self, 'low_card_discard', 0) + 1
         
-        # Pattern detection - does opponent discard to chase draws?
-        if street == 1 and len(self.redraw_history) >= 2:
-            # If we have board info, we could do much deeper analysis here
-            pass
         
         # Update redraw frequency model with uncertainty
         if hasattr(self, 'redraw_frequency_by_street'):
