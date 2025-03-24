@@ -286,12 +286,16 @@ class Redraw:
             # Case 3: Deceptive redraw with strong hands
             if not should_redraw and current_strength > 0.75:
                 # Calculate the balance between deception and value
-                deception_threshold = 0.1  # Base threshold
+                deception_threshold = 0.02  # Reduced from 0.1 to 0.02 (80% reduction)
                 
                 # Adjust based on opponent type:
                 # - Against observant opponents (lower fold equity), deception is more valuable
                 # - Against unobservant opponents (high fold equity), keeping value is better
                 deception_threshold *= (1.5 - opp_fold_equity)
+                
+                # Add additional restriction: only consider deception in later hands
+                if opponent_model.hands_seen < 10:
+                    return should_redraw, card_idx  # No deception in early hands
                 
                 # Occasionally make a deceptive redraw
                 if random.random() < deception_threshold:
@@ -302,7 +306,6 @@ class Redraw:
                     # Discard lower card
                     discard_idx = 0 if card1_rank < card2_rank else 1
                     return True, discard_idx
-            
             # Case 4: Information gathering early in the match
             if opponent_model.hands_seen < 20 and random.random() < 0.2:
                 # Sometimes redraw even marginal hands to gather information
