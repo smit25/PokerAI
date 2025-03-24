@@ -121,7 +121,7 @@ class HandEvaluator:
             Tuple of (hand_type, tiebreakers)
         """
 
-        all_cards = [self._card_idx_to_str(card) for card in hole_cards + board_cards]
+        all_cards = [self._card_idx_to_str(card) for card in hole_cards + board_cards if card != -1]
         
         # Create cache key
         key = tuple(sorted(hole_cards + board_cards))
@@ -152,7 +152,6 @@ class HandEvaluator:
         # TODO
         rank_values = []
         for r in ranks:
-            print(r)
             if r == 'A':
                 rank_values.append(14)  # High ace
                 rank_values.append(1)   # Low ace
@@ -212,8 +211,8 @@ class HandEvaluator:
         # Two Pair
         if list(rank_counts.values()).count(2) >= 2:
             pairs = sorted([r for r, count in rank_counts.items() if count == 2], 
-                         key=lambda x: 14 if x == 'A' else int(x), 
-                         reverse=True)
+                         key=lambda x: 14 if x == 'A' else int(x), reverse=True)
+            pairs = pairs[ :min(2, len(pairs))]
             kicker = max([r for r in ranks if r not in pairs], 
                         key=lambda x: 14 if x == 'A' else int(x))
             return (3, (pairs[0], pairs[1], kicker))

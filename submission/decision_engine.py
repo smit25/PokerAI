@@ -202,14 +202,16 @@ class DecisionEngine:
             pot_odds = 0
         
         # Check if this is a good bluffing spot
-        is_bluff_candidate = hand_strength < self.bluff_threshold
-        if is_bluff_candidate:
-            bluff_equity = self.opponent_model.get_fold_equity()
-            # Adjust strength for potential bluff
-            bluff_adjusted_strength = self.opponent_model.adjust_hand_strength(
-                hand_strength, street, is_bluff_candidate=True)
-        else:
-            bluff_adjusted_strength = adjusted_strength
+        # is_bluff_candidate = hand_strength > self.bluff_threshold
+        # if is_bluff_candidate:
+        #     bluff_equity = self.opponent_model.get_fold_equity()
+        #     # Adjust strength for potential bluff
+        #     bluff_adjusted_strength = self.opponent_model.adjust_hand_strength(
+        #         hand_strength, street, is_bluff_candidate=True)
+        # else:
+        #     bluff_adjusted_strength = adjusted_strength
+        bluff_adjusted_strength = adjusted_strength
+        
         
         if call_amount == 0:  # We can check
             # Strong hand - value bet
@@ -236,18 +238,18 @@ class DecisionEngine:
             
             # Weak hand - check or bluff
             else:
-                # Consider bluffing
-                if is_bluff_candidate and random.random() < self.bluff_frequency and valid_actions[action_types.RAISE.value]:
-                    # Smaller bluff on flop, larger on turn/river
-                    if street == 1:
-                        bet_size = max(min_raise, int(pot_size * self.bet_sizing['small']))
-                    else:
-                        bet_size = max(min_raise, int(pot_size * self.bet_sizing['medium']))
+                # # Consider bluffing
+                # if is_bluff_candidate and random.random() < self.bluff_frequency and valid_actions[action_types.RAISE.value]:
+                #     # Smaller bluff on flop, larger on turn/river
+                #     if street == 1:
+                #         bet_size = max(min_raise, int(pot_size * self.bet_sizing['small']))
+                #     else:
+                #         bet_size = max(min_raise, int(pot_size * self.bet_sizing['medium']))
                     
-                    bet_size = min(max_raise, bet_size)
-                    return (action_types.RAISE.value, bet_size, -1)
-                else:
-                    return (action_types.CHECK.value, 0, -1)
+                #     bet_size = min(max_raise, bet_size)
+                #     return (action_types.RAISE.value, bet_size, -1)
+                # else:
+                return (action_types.CHECK.value, 0, -1)
         
         else:  # Facing a bet
             # Strong hand - raise for value
