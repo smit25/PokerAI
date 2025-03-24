@@ -2,11 +2,11 @@ from agents.agent import Agent
 from gym_env import PokerEnv
 import random
 
-from .hand_evaluator import HandEvaluator
-from .redraw import Redraw
-from .opponent_model import OpponentModel
-from .decision_engine import DecisionEngine
-from .time_manager import TimeManager
+from submission.hand_evaluator import HandEvaluator
+from submission.redraw import Redraw
+from submission.opponent_model import OpponentModel
+from submission.decision_engine import DecisionEngine
+from submission.time_manager import TimeManager
 
 action_types = PokerEnv.ActionType
 

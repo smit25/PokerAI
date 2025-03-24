@@ -272,9 +272,9 @@ class DecisionEngine:
                     return (action_types.CALL.value, 0, -1)
             
             # Weak hand - consider bluff-raising or folding
-            elif is_bluff_candidate and random.random() < bluff_equity / 2 and valid_actions[action_types.RAISE.value]:
-                raise_size = max(min_raise, min(max_raise, int(call_amount * 2.5)))
-                return (action_types.RAISE.value, raise_size, -1)
+            # elif is_bluff_candidate and random.random() < bluff_equity / 2 and valid_actions[action_types.RAISE.value]:
+            #     raise_size = max(min_raise, min(max_raise, int(call_amount * 2.5)))
+            #     return (action_types.RAISE.value, raise_size, -1)
         
         # Default: fold if we have to call, check if we can
         if call_amount > 0:

@@ -217,6 +217,49 @@ class OpponentModel:
             'hand_strength': self._estimate_hand_strength(opponent_cards, board),
             'won': won_hand
         })
+
+
+    def update_from_redraw(self, discarded_card, drawn_card, street):
+        """
+        Update model based on opponent's redraw action with detailed pattern analysis.
+        
+        Args:
+            discarded_card: Card index that was discarded
+            drawn_card: Card index that was drawn
+            street: Current street (0-1)
+        """
+        self.redraw_count += 1
+        self.redraw_history.append((discarded_card, drawn_card, street))
+        
+        # Advanced analysis of discarded cards
+        # Track what types of cards are being discarded
+        discarded_rank = discarded_card // 3
+        discarded_suit = discarded_card % 3
+        
+        # Track if opponent tends to discard high cards or low cards
+        if discarded_rank >= 7:  # 9 or A
+            self.high_card_discard = getattr(self, 'high_card_discard', 0) + 1
+        else:
+            self.low_card_discard = getattr(self, 'low_card_discard', 0) + 1
+        
+        # Pattern detection - does opponent discard to chase draws?
+        if street == 1 and len(self.redraw_history) >= 2:
+            # If we have board info, we could do much deeper analysis here
+            pass
+        
+        # Update redraw frequency model with uncertainty
+        if hasattr(self, 'redraw_frequency_by_street'):
+            self.redraw_frequency_by_street[street] = (
+                self.redraw_frequency_by_street[street][0] + 1,
+                self.redraw_frequency_by_street[street][1] + 1
+            )
+        else:
+            self.redraw_frequency_by_street = {
+                0: (1, 1),  # (redraws, hands seen)
+                1: (0, 0)
+            }
+            if street == 1:
+                self.redraw_frequency_by_street[1] = (1, 1)
     
     def _estimate_hand_strength(self, hole_cards, board):
         """
