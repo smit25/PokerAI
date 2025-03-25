@@ -1,0 +1,10 @@
+# Team 0: Team 0, Team 1: Team 1
+hand_number,street,active_team,team_0_bankroll,team_1_bankroll,action_type,action_amount,team_0_cards,team_1_cards,board_cards,team_0_discarded,team_1_discarded,team_0_bet,team_1_bet
+0,Pre-Flop,0,-300,300,CALL,0,"['4s', 'As']","['4d', '7d']","['6s', 'Ad']",,,1,1
+0,Pre-Flop,1,-300,300,FOLD,0,"['4s', 'As']","['4d', '7d']","['6s', 'Ad']",,,2,2
+1,Pre-Flop,1,-298,298,FOLD,0,"['3h', '6h']","['5s', '9d']","['6s', '4d']",,,1,1
+2,Pre-Flop,0,-297,297,CALL,0,"['5s', 'Ad']","['7h', '9d']","['As', '5d']",,,1,1
+2,Pre-Flop,1,-297,297,FOLD,0,"['5s', 'Ad']","['7h', '9d']","['As', '5d']",,,2,2
+3,Pre-Flop,1,-295,295,FOLD,0,"['7s', '3d']","['8d', '3s']","['9d', '9s']",,,1,1
+4,Pre-Flop,0,-294,294,CALL,0,"['5s', '8d']","['3s', '2d']","['2h', '4s']",,,1,1
+4,Pre-Flop,1,-294,294,FOLD,0,"['5s', '8d']","['3s', '2d']","['2h', '4s']",,,2,2
