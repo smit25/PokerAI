@@ -29,14 +29,14 @@ def verify_submission() -> Optional[str]:
     Returns:
         Optional[str]: Error message if verification fails, None if successful
     """
-    if not os.path.isdir("submission"):
+    if not os.path.isdir("submission2"):
         return "Submission directory not found"
 
-    if not os.path.isfile("submission/player.py"):
+    if not os.path.isfile("submission2/player.py"):
         return "Required file 'player.py' not found in submission directory"
 
     try:
-        spec = importlib.util.spec_from_file_location("player", "submission/player.py")
+        spec = importlib.util.spec_from_file_location("player", "submission2/player.py")
         if spec is None or spec.loader is None:
             return "Could not load player.py"
 
